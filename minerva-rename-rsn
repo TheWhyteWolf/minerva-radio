@@ -1,0 +1,97 @@
+#!/bin/bash
+# =============================================================================
+# minerva-rename-rsn — Rename RSN folders using info.txt or snesmusic.org
+# Usage: minerva-rename-rsn [directory] [--dry-run]
+# =============================================================================
+
+DRY_RUN=0
+DIR="."
+
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        *) DIR="$arg" ;;
+    esac
+done
+
+LOGFILE="$DIR/rename_log.txt"
+> "$LOGFILE"
+declare -A used_names
+
+total=0
+renamed=0
+skipped=0
+failed=0
+
+sanitize() {
+    echo "$1" | sed 's/[\/\\:*?"<>|]/_/g' | sed 's/[[:space:]]*$//'
+}
+
+get_name_from_info() {
+    local dir="$1"
+    local info="$dir/info.txt"
+    if [[ -f "$info" ]]; then
+        head -1 "$info" | tr -d '\r'
+    fi
+}
+
+get_name_from_web() {
+    local code="$1"
+    local url="https://www.snesmusic.org/v2/profile.php?profile=set&selected=$code"
+    local title
+    title=$(curl -s --max-time 10 "$url" | grep -oP '(?<=<title>)[^<]+' | head -1 | sed 's/ - SNES Music//' | tr -d '\r')
+    echo "$title"
+}
+
+assign_unique_name() {
+    local base="$1"
+    if [[ -z "${used_names[$base]}" ]]; then
+        used_names["$base"]=1
+        echo "$base"
+    else
+        local count="${used_names[$base]}"
+        ((count++))
+        used_names["$base"]=$count
+        echo "$base $count"
+    fi
+}
+
+for dir in "$DIR"/*/; do
+    dir="${dir%/}"
+    [[ -d "$dir" ]] || continue
+    [[ "$dir" == "$DIR" ]] && continue
+    ((total++))
+
+    game_name=$(get_name_from_info "$dir")
+
+    if [[ -z "$game_name" ]]; then
+        echo "  [web] Looking up: $(basename "$dir")"
+        game_name=$(get_name_from_web "$(basename "$dir")")
+    fi
+
+    if [[ -z "$game_name" ]]; then
+        echo "FAILED $(basename "$dir") - no name found" | tee -a "$LOGFILE"
+        ((failed++))
+        continue
+    fi
+
+    clean_name=$(sanitize "$game_name")
+    final_name=$(assign_unique_name "$clean_name")
+
+    if [[ "$dir" == "$DIR/$final_name" ]]; then
+        echo "SKIP $(basename "$dir") (already correctly named)" | tee -a "$LOGFILE"
+        ((skipped++))
+        continue
+    fi
+
+    echo "RENAME $(basename "$dir") -> $final_name" | tee -a "$LOGFILE"
+    ((renamed++))
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        mv "$dir" "$DIR/$final_name"
+    fi
+done
+
+echo ""
+[[ "$DRY_RUN" -eq 1 ]] && echo "DRY RUN - no changes made"
+echo "Total: $total | Renamed: $renamed | Skipped: $skipped | Failed: $failed"
+echo "Full log: $LOGFILE"
