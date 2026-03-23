@@ -1,0 +1,124 @@
+#!/bin/bash
+# =============================================================================
+# minerva — MiNERVA Radio unified launcher
+# Usage: minerva [--setup] [--index] [--request] [--help]
+# =============================================================================
+
+CONFIG_DIR="$HOME/.config/minerva-radio"
+CONFIG_FILE="$CONFIG_DIR/minerva.conf"
+
+GREEN="\e[1;32m"
+CYAN="\e[1;36m"
+YELLOW="\e[1;33m"
+RED="\e[1;31m"
+RESET="\e[0m"
+
+print_header() {
+    clear
+    echo -e "${CYAN}╔══════════════════════════════════════════╗${RESET}"
+    echo -e "${CYAN}║             M i N E R V A                ║${RESET}"
+    echo -e "${CYAN}║          Video Game Music Radio          ║${RESET}"
+    echo -e "${CYAN}╚══════════════════════════════════════════╝${RESET}"
+    echo ""
+}
+
+show_help() {
+    print_header
+    echo -e "  ${YELLOW}Usage:${RESET} minerva [option]"
+    echo ""
+    echo -e "  ${GREEN}(no args)${RESET}   Auto-detect and launch — setup, index, then play"
+    echo -e "  ${GREEN}--setup${RESET}     Re-run the configuration wizard"
+    echo -e "  ${GREEN}--index${RESET}     Re-index your music directory"
+    echo -e "  ${GREEN}--request${RESET}   Launch the request terminal"
+    echo -e "  ${GREEN}--help${RESET}      Show this help"
+    echo ""
+    echo -e "  ${YELLOW}Tip:${RESET} Run ${CYAN}minerva-request${RESET} in a second terminal while"
+    echo -e "       the radio is playing to queue tracks."
+    echo ""
+    exit 0
+}
+
+# --- Handle flags ---
+case "$1" in
+    --help)    show_help ;;
+    --setup)   exec minerva-setup ;;
+    --index)
+        if [[ ! -f "$CONFIG_FILE" ]]; then
+            echo -e "${RED}Error:${RESET} No config found. Run 'minerva --setup' first."
+            exit 1
+        fi
+        source "$CONFIG_FILE"
+        echo -e "${CYAN}Re-indexing $VGM_DIR...${RESET}"
+        exec "$DEFAULT_INDEXER" "$VGM_DIR"
+        ;;
+    --request) exec minerva-request ;;
+esac
+
+# --- Auto-launch flow ---
+print_header
+
+# Step 1 — Config check
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo -e "${YELLOW}⚠ No configuration found.${RESET}"
+    echo -e "  Running first-time setup...\n"
+    sleep 1
+    minerva-setup
+    # Re-check after setup
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo -e "${RED}Setup did not complete. Exiting.${RESET}"
+        exit 1
+    fi
+fi
+
+source "$CONFIG_FILE"
+
+# Step 2 — Catalogue check
+CSV_FILE="${VGM_DIR}/${CATALOGUE_NAME}.csv"
+
+if [[ ! -f "$CSV_FILE" ]]; then
+    print_header
+    echo -e "${YELLOW}⚠ No catalogue found at:${RESET} $CSV_FILE"
+    echo ""
+    echo -e "  Your music directory: ${CYAN}$VGM_DIR${RESET}"
+    echo ""
+
+    # Check the music directory actually has files before indexing
+    if ! find "$VGM_DIR" -type f \( -name "*.vgm" -o -name "*.vgz" -o -name "*.spc" \
+         -o -name "*.mp3" -o -name "*.flac" -o -name "*.wav" \) | grep -q .; then
+        echo -e "${RED}⚠ No supported audio files found in $VGM_DIR${RESET}"
+        echo ""
+        echo -e "  Add your VGM/SPC/MP3/FLAC files to:"
+        echo -e "  ${CYAN}$VGM_DIR${RESET}"
+        echo ""
+        echo -e "  Then run ${CYAN}minerva${RESET} again."
+        exit 1
+    fi
+
+    echo -e "  Building catalogue using ${CYAN}$DEFAULT_INDEXER${RESET}..."
+    echo -e "  This may take a moment for large libraries.\n"
+    sleep 1
+    "$DEFAULT_INDEXER" "$VGM_DIR"
+
+    if [[ ! -f "$CSV_FILE" ]]; then
+        echo -e "${RED}Error:${RESET} Indexing did not produce a catalogue. Check your music directory."
+        exit 1
+    fi
+fi
+
+# Step 3 — Launch the radio
+print_header
+echo -e "  ${GREEN}✔${RESET} Config:    $CONFIG_FILE"
+echo -e "  ${GREEN}✔${RESET} Catalogue: $CSV_FILE"
+echo -e "  ${GREEN}✔${RESET} Music dir: $VGM_DIR"
+echo ""
+
+track_count=$(( $(wc -l < "$CSV_FILE") - 1 ))
+echo -e "  ${CYAN}$track_count tracks${RESET} in catalogue"
+echo ""
+echo -e "  ${YELLOW}Tip:${RESET} Open a second terminal and run ${CYAN}minerva-request${RESET}"
+echo -e "       to search and queue tracks while the radio plays."
+echo ""
+echo -e "  Starting in 3 seconds... (Ctrl+C to cancel)"
+sleep 3
+
+exec minerva-radio
