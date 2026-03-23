@@ -1,0 +1,421 @@
+#!/bin/bash
+# =============================================================================
+# minerva-request — MiNERVA Radio request terminal
+# =============================================================================
+
+CONFIG_FILE="$HOME/.config/minerva-radio/minerva.conf"
+if [[ -f "$CONFIG_FILE" ]]; then
+    source "$CONFIG_FILE"
+else
+    echo -e "\e[1;31mError:\e[0m No config found. Run 'minerva-setup' first."
+    exit 1
+fi
+
+CSV_FILE="${VGM_DIR}/${CATALOGUE_NAME}.csv"
+QUEUE_FILE="/tmp/minerva_queue"
+
+if [ ! -f "$CSV_FILE" ]; then
+    echo "Error: CSV catalogue not found at $CSV_FILE"
+    exit 1
+fi
+
+if [ ! -f "$QUEUE_FILE" ]; then
+    echo "Error: MiNERVA Radio does not appear to be running."
+    exit 1
+fi
+
+# --- HELPERS ---
+print_header() {
+    clear
+    echo -e "\e[1;34m╔══════════════════════════════════════════╗\e[0m"
+    echo -e "\e[1;34m║       MiNERVA RADIO REQUEST TERMINAL     ║\e[0m"
+    echo -e "\e[1;34m╚══════════════════════════════════════════╝\e[0m"
+    echo ""
+}
+
+queue_depth() {
+    if [ -f "$QUEUE_FILE" ]; then
+        wc -l < "$QUEUE_FILE"
+    else
+        echo 0
+    fi
+}
+
+press_any_key() {
+    echo ""
+    echo -e "\e[1;33mPress any key to return to menu...\e[0m"
+    read -rsn1
+}
+
+# --- REQUEST BY ID ---
+do_request() {
+    print_header
+    echo -e "\e[1;32m[ REQUEST BY CATALOGUE ID ]\e[0m"
+    echo ""
+    echo -e "Enter Catalogue ID (e.g. 100-1002-3) or blank to cancel:"
+    echo -n "> "
+    read -r cat_id
+
+    if [ -z "$cat_id" ]; then return; fi
+
+    result=$(python3 -c "
+import sys, csv
+with open('$CSV_FILE', newline='', encoding='utf-8', errors='replace') as f:
+    for row in csv.reader(f):
+        if len(row) >= 9 and row[4] == '$cat_id':
+            print(row[6])
+            print(row[7].replace('_', ' '))
+            print(row[8])
+            break
+")
+
+    if [ -z "$result" ]; then
+        echo -e "\e[1;31mError:\e[0m Catalogue ID '$cat_id' not found."
+        press_any_key
+        return
+    fi
+
+    platform=$(echo "$result" | sed -n '1p')
+    game=$(echo "$result" | sed -n '2p')
+    file=$(echo "$result" | sed -n '3p')
+
+    echo "$cat_id" >> "$QUEUE_FILE"
+    total=$(queue_depth)
+
+    echo ""
+    echo -e "\e[1;34m[ REQUEST QUEUED ]\e[0m"
+    echo "------------------------------------------"
+    echo -e "\e[1;32mID:      \e[0m $cat_id"
+    if [ -n "$platform" ]; then
+        echo -e "\e[1;32mSystem:  \e[0m $platform"
+    fi
+    echo -e "\e[1;32mGame:    \e[0m $game"
+    echo -e "\e[1;32mTrack:   \e[0m $file"
+    echo -e "\e[1;32mPosition:\e[0m $total of $total in queue"
+    echo "------------------------------------------"
+    echo ""
+    echo -e "\e[1;33mLast 3 entries in queue:\e[0m"
+    echo ""
+    tail -3 "$QUEUE_FILE" | while IFS= read -r qid; do
+        python3 -c "
+import sys, csv
+with open('$CSV_FILE', newline='', encoding='utf-8', errors='replace') as f:
+    for row in csv.reader(f):
+        if len(row) >= 9 and row[4] == '$qid':
+            game = row[7].replace('_', ' ')
+            print('  \033[1;32m' + row[4] + '\033[0m ' + game + ' / ' + row[8])
+            break
+"
+    done
+    echo ""
+    echo -e "\e[1;35mTotal in queue: $total\e[0m"
+    press_any_key
+}
+
+# --- SHOW QUEUE ---
+do_queue() {
+    print_header
+    echo -e "\e[1;32m[ QUEUE VIEWER ]\e[0m"
+    echo ""
+    total=$(queue_depth)
+
+    if [ "$total" -eq 0 ]; then
+        echo "Queue is empty."
+        press_any_key
+        return
+    fi
+
+    echo -e "Total entries in queue: \e[1;35m$total\e[0m"
+    echo -e "How many would you like to show? (default 10, blank for all):"
+    echo -n "> "
+    read -r limit
+
+    if [ -z "$limit" ]; then
+        limit=$total
+    elif ! [[ "$limit" =~ ^[0-9]+$ ]]; then
+        echo "Invalid number, showing top 10."
+        limit=10
+    fi
+
+    echo ""
+    echo "------------------------------------------"
+    pos=1
+    head -"$limit" "$QUEUE_FILE" | while IFS= read -r qid; do
+        python3 -c "
+import sys, csv
+with open('$CSV_FILE', newline='', encoding='utf-8', errors='replace') as f:
+    for row in csv.reader(f):
+        if len(row) >= 9 and row[4] == '$qid':
+            game = row[7].replace('_', ' ')
+            platform = (' [' + row[6] + ']') if row[6] else ''
+            print('  \033[1;32m$pos.\033[0m \033[1;33m' + row[4] + '\033[0m ' + game + platform + ' / ' + row[8])
+            break
+"
+        ((pos++))
+    done
+    echo "------------------------------------------"
+    echo -e "\e[1;35mShowing $limit of $total total entries\e[0m"
+    press_any_key
+}
+
+# --- SEARCH ---
+do_search() {
+    while true; do
+        print_header
+        echo -e "\e[1;32m[ SEARCH CATALOGUE ]\e[0m"
+        echo ""
+        echo "Enter search term or blank to return to menu:"
+        echo -n "> "
+        read -r term
+
+        if [ -z "$term" ]; then return; fi
+
+        echo ""
+        echo -e "\e[1;34m[ RESULTS FOR: $term ]\e[0m"
+        echo "------------------------------------------"
+
+        mapfile -t search_results < <(python3 -c "
+import csv
+term = '$term'.lower().replace(' ', '_')
+seen = {}
+with open('$CSV_FILE', newline='', encoding='utf-8', errors='replace') as f:
+    for row in csv.reader(f):
+        if len(row) < 9:
+            continue
+        tld_id = row[0]
+        sub_id = row[1]
+        platform = row[6]
+        game = row[7]
+        composite_key = tld_id + '~' + sub_id
+        if term in game.lower() or term in row[8].lower():
+            if composite_key not in seen:
+                seen[composite_key] = {'tld_id': tld_id, 'sub_id': sub_id, 'composite': composite_key, 'platform': platform, 'name': game.replace('_', ' '), 'count': 0}
+            seen[composite_key]['count'] += 1
+for i, v in enumerate(seen.values()):
+    print(str(i+1) + '~' + v['composite'] + '~' + v['platform'] + '~' + v['name'] + '~' + str(v['count']))
+")
+
+        if [ ${#search_results[@]} -eq 0 ]; then
+            echo "No results found for: $term"
+            press_any_key
+            continue
+        fi
+
+        declare -a ordered_composites
+        declare -a ordered_platforms
+
+        for result in "${search_results[@]}"; do
+            num=$(echo "$result" | cut -d'~' -f1)
+            composite=$(echo "$result" | cut -d'~' -f2-3)
+            platform=$(echo "$result" | cut -d'~' -f4)
+            name=$(echo "$result" | cut -d'~' -f5)
+            count=$(echo "$result" | cut -d'~' -f6)
+            ordered_composites+=("$composite")
+            ordered_platforms+=("$platform")
+            if [ -n "$platform" ]; then
+                echo -e "  \e[1;32m$num.\e[0m \e[1;33m$name\e[0m \e[1;36m[$platform]\e[0m \e[1;35m($count tracks)\e[0m"
+            else
+                echo -e "  \e[1;32m$num.\e[0m \e[1;33m$name\e[0m \e[1;35m($count tracks)\e[0m"
+            fi
+        done
+
+        echo "------------------------------------------"
+        echo ""
+        echo -e "Enter number to browse, or blank to search again:"
+        echo -n "> "
+        read -r choice
+
+        if [ -z "$choice" ]; then continue; fi
+
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#ordered_composites[@]} ]; then
+            echo -e "\e[1;31mInvalid selection.\e[0m"
+            press_any_key
+            continue
+        fi
+
+        selected_composite="${ordered_composites[$((choice-1))]}"
+        tld_id=$(echo "$selected_composite" | cut -d'~' -f1)
+        sub_id=$(echo "$selected_composite" | cut -d'~' -f2)
+        do_browse "$tld_id" "$sub_id"
+    done
+}
+
+# --- BROWSE GAME ---
+do_browse() {
+    local tld_id="$1"
+    local sub_id="$2"
+
+    while true; do
+        print_header
+        echo -e "\e[1;32m[ BROWSE GAME ]\e[0m"
+        echo ""
+
+        mapfile -t tracks < <(python3 -c "
+import sys, csv
+with open('$CSV_FILE', newline='', encoding='utf-8', errors='replace') as f:
+    for row in csv.reader(f):
+        if len(row) < 9:
+            continue
+        if row[0] == '$tld_id' and row[1] == '$sub_id':
+            print(row[4] + '~' + row[6] + '~' + row[7].replace('_', ' ') + '~' + row[8])
+")
+
+        if [ ${#tracks[@]} -eq 0 ]; then
+            echo "No tracks found."
+            press_any_key
+            return
+        fi
+
+        game_name=$(echo "${tracks[0]}" | cut -d'~' -f3)
+        platform_name=$(echo "${tracks[0]}" | cut -d'~' -f2)
+
+        if [ -n "$platform_name" ]; then
+            echo -e "\e[1;34m$game_name\e[0m \e[1;36m[$platform_name]\e[0m \e[1;35m(${#tracks[@]} tracks)\e[0m"
+        else
+            echo -e "\e[1;34m$game_name\e[0m \e[1;35m(${#tracks[@]} tracks)\e[0m"
+        fi
+        echo "------------------------------------------"
+
+        declare -A queued_ids
+        if [ -s "$QUEUE_FILE" ]; then
+            while IFS= read -r qid; do
+                queued_ids[$qid]=1
+            done < "$QUEUE_FILE"
+        fi
+
+        declare -a track_cat_ids
+        i=1
+        for track in "${tracks[@]}"; do
+            cat_id=$(echo "$track" | cut -d'~' -f1)
+            file=$(echo "$track" | cut -d'~' -f4)
+            track_cat_ids+=("$cat_id")
+            if [ "${queued_ids[$cat_id]}" == "1" ]; then
+                echo -e "  \e[1;32m$i.\e[0m $file \e[1;35m[queued]\e[0m"
+            else
+                echo -e "  \e[1;32m$i.\e[0m $file"
+            fi
+            ((i++))
+        done
+
+        echo "------------------------------------------"
+        echo ""
+        echo -e "Enter track number to queue, \e[1;33ma\e[0m to queue all, or blank to go back:"
+        echo -n "> "
+        read -r choice
+
+        if [ -z "$choice" ]; then return; fi
+
+        if [ "$choice" == "a" ] || [ "$choice" == "A" ]; then
+            queued_count=0
+            for cat_id in "${track_cat_ids[@]}"; do
+                echo "$cat_id" >> "$QUEUE_FILE"
+                ((queued_count++))
+            done
+            total=$(queue_depth)
+            echo ""
+            echo -e "\e[1;34m[ ALL TRACKS QUEUED ]\e[0m"
+            echo "------------------------------------------"
+            echo -e "\e[1;32mGame:   \e[0m $game_name"
+            echo -e "\e[1;32mTracks: \e[0m $queued_count tracks added"
+            echo -e "\e[1;32mQueue:  \e[0m $total total tracks waiting"
+            echo "------------------------------------------"
+            press_any_key
+            return
+        fi
+
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#track_cat_ids[@]} ]; then
+            echo -e "\e[1;31mInvalid selection.\e[0m"
+            press_any_key
+            continue
+        fi
+
+        selected_cat_id="${track_cat_ids[$((choice-1))]}"
+        selected_file=$(echo "${tracks[$((choice-1))]}" | cut -d'~' -f4)
+
+        echo "$selected_cat_id" >> "$QUEUE_FILE"
+        total=$(queue_depth)
+
+        echo ""
+        echo -e "\e[1;34m[ REQUEST QUEUED ]\e[0m"
+        echo "------------------------------------------"
+        echo -e "\e[1;32mGame:    \e[0m $game_name"
+        echo -e "\e[1;32mTrack:   \e[0m $selected_file"
+        echo -e "\e[1;32mPosition:\e[0m $total of $total in queue"
+        echo "------------------------------------------"
+        echo ""
+        echo -e "Enter another track number, \e[1;33ma\e[0m to queue all, or blank to go back:"
+        echo -n "> "
+        read -r choice
+
+        if [ -z "$choice" ]; then return; fi
+
+        if [ "$choice" == "a" ] || [ "$choice" == "A" ]; then
+            queued_count=0
+            for cat_id in "${track_cat_ids[@]}"; do
+                echo "$cat_id" >> "$QUEUE_FILE"
+                ((queued_count++))
+            done
+            total=$(queue_depth)
+            echo ""
+            echo -e "\e[1;34m[ ALL TRACKS QUEUED ]\e[0m"
+            echo "------------------------------------------"
+            echo -e "\e[1;32mGame:   \e[0m $game_name"
+            echo -e "\e[1;32mTracks: \e[0m $queued_count tracks added"
+            echo -e "\e[1;32mQueue:  \e[0m $total total tracks waiting"
+            echo "------------------------------------------"
+            press_any_key
+            return
+        fi
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#track_cat_ids[@]} ]; then
+            selected_cat_id="${track_cat_ids[$((choice-1))]}"
+            selected_file=$(echo "${tracks[$((choice-1))]}" | cut -d'~' -f4)
+            echo "$selected_cat_id" >> "$QUEUE_FILE"
+            total=$(queue_depth)
+            echo -e "\e[1;34mQueued:\e[0m $selected_file \e[1;35m(position $total)\e[0m"
+            press_any_key
+        fi
+    done
+}
+
+# --- BROWSE BY TLD + SUB ID ---
+do_browse_direct() {
+    print_header
+    echo -e "\e[1;32m[ BROWSE BY TLD + SUB ID ]\e[0m"
+    echo ""
+    echo "Enter TLD_ID and SUB_ID (e.g. 100 1258) or blank to cancel:"
+    echo -n "> "
+    read -r tld_id sub_id
+    if [ -n "$tld_id" ] && [ -n "$sub_id" ]; then
+        do_browse "$tld_id" "$sub_id"
+    fi
+}
+
+# --- MAIN MENU ---
+main_menu() {
+    while true; do
+        print_header
+        total=$(queue_depth)
+        echo -e "\e[1;35mQueue: $total track(s) waiting\e[0m"
+        echo ""
+        echo -e "  \e[1;32m1.\e[0m Request by Catalogue ID"
+        echo -e "  \e[1;32m2.\e[0m View queue"
+        echo -e "  \e[1;32m3.\e[0m Search catalogue"
+        echo -e "  \e[1;32m4.\e[0m Browse by TLD + SUB ID"
+        echo -e "  \e[1;32mq.\e[0m Quit"
+        echo ""
+        echo -n "> "
+        read -rsn1 choice
+        echo ""
+
+        case "$choice" in
+            1) do_request ;;
+            2) do_queue ;;
+            3) do_search ;;
+            4) do_browse_direct ;;
+            q|Q) echo "Goodbye."; exit 0 ;;
+        esac
+    done
+}
+
+main_menu
