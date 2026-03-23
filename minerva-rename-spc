@@ -1,0 +1,106 @@
+#!/bin/bash
+# =============================================================================
+# minerva-rename-spc — Rename .spc files using ID666 title tags
+# Usage: minerva-rename-spc [directory] [--dry-run]
+# =============================================================================
+
+DRY_RUN=0
+DIR="."
+
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        *) DIR="$arg" ;;
+    esac
+done
+
+LOGFILE="$DIR/spc_rename_log.txt"
+> "$LOGFILE"
+
+renamed=0
+skipped=0
+failed=0
+total=0
+
+sanitize() {
+    echo "$1" \
+    | sed 's/[\/\\:*?<>|]/_/g' \
+    | sed "s/[\"']//g" \
+    | sed 's/[[:space:]]*$//' \
+    | sed 's/^[[:space:]]*//'
+}
+
+process_dir() {
+    local target="$1"
+    declare -A used_names
+
+    local any=0
+    for f in "$target"/*.spc; do
+        [[ -f "$f" ]] || continue
+        any=1
+        break
+    done
+    [[ $any -eq 0 ]] && return
+
+    echo "" | tee -a "$LOGFILE"
+    echo "== $(basename "$target") ==" | tee -a "$LOGFILE"
+
+    for f in "$target"/*.spc; do
+        [[ -f "$f" ]] || continue
+        ((total++))
+
+        title=$(python3 - "$f" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path, 'rb') as fh:
+    data = fh.read()
+title = data[0x2e:0x4e].decode('ascii', errors='replace').rstrip('\x00').strip()
+print(title)
+PYEOF
+)
+
+        if [[ -z "$title" ]]; then
+            echo "FAILED $(basename "$f") -> (no ID666 title tag)" | tee -a "$LOGFILE"
+            ((failed++))
+            continue
+        fi
+
+        clean=$(sanitize "$title")
+
+        if [[ -z "${used_names[$clean]}" ]]; then
+            used_names["$clean"]=1
+            final="${clean}.spc"
+        else
+            count="${used_names[$clean]}"
+            ((count++))
+            used_names["$clean"]=$count
+            final="${clean} (${count}).spc"
+        fi
+
+        src=$(basename "$f")
+
+        if [[ "$src" == "$final" ]]; then
+            echo "SKIP $src (already correctly named)" | tee -a "$LOGFILE"
+            ((skipped++))
+            continue
+        fi
+
+        echo "RENAME $src -> $final" | tee -a "$LOGFILE"
+        ((renamed++))
+
+        if [[ "$DRY_RUN" -eq 0 ]]; then
+            mv "$f" "$target/$final"
+        fi
+    done
+}
+
+for subdir in "$DIR"/*/; do
+    [[ -d "$subdir" ]] || continue
+    process_dir "$subdir"
+done
+
+echo "" | tee -a "$LOGFILE"
+echo "================================================" | tee -a "$LOGFILE"
+[[ "$DRY_RUN" -eq 1 ]] && echo "DRY RUN - no changes made" | tee -a "$LOGFILE"
+echo "Total: $total | Renamed: $renamed | Skipped: $skipped | Failed: $failed" | tee -a "$LOGFILE"
+echo "Full log: $LOGFILE"
