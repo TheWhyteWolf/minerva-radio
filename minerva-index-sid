@@ -1,0 +1,134 @@
+#!/bin/bash
+
+# --- CONFIGURATION ---
+WORK_DIR="${1:-.}"
+OUTPUT_CSV="$WORK_DIR/vgm_catalogue.csv"
+
+echo "Indexing: $WORK_DIR"
+echo "Output: $OUTPUT_CSV"
+echo "------------------------------------------"
+
+echo "TLD_ID,SUB_ID,PLATFORM_ID,FILE_ID,Catalogue_ID,TLD_Name,Platform_Name,Game_Name,File_Name,SID_MD5" > "$OUTPUT_CSV"
+
+tld_id=100
+sub_id=1000
+total_tracks=0
+total_subdirs=0
+total_tlds=0
+
+excluded="cli-visualizer|clivisualizer|libvgm|build|__MACOSX|Xtract|DeAccent|indexer|DOCUMENTS"
+
+# --- SID MD5 READER ---
+get_sid_info() {
+local file="$1"
+python3 - "$file" <<'EOF'
+import sys, hashlib
+file = sys.argv[1]
+with open(file, 'rb') as f:
+    data = f.read()
+md5 = hashlib.md5(data[0x7C:]).hexdigest()
+print(md5)
+EOF
+}
+
+# --- FIND AUDIO FILES ---
+find_audio_files() {
+local dir="$1"
+local maxdepth="${2:-}"
+if [[ -n "$maxdepth" ]]; then
+    find "$dir" -maxdepth "$maxdepth" -type f \( \
+        -name "*.vgz" -o \
+        -name "*.vgm" -o \
+        -name "*.spc" -o \
+        -name "*.sid" \
+    \)
+else
+    find "$dir" -type f \( \
+        -name "*.vgz" -o \
+        -name "*.vgm" -o \
+        -name "*.spc" -o \
+        -name "*.sid" \
+    \)
+fi
+}
+
+# --- GROUPING FOLDER DETECTION ---
+# A grouping folder contains subdirs but NO direct audio files.
+# This means it's a category/alpha layer, not a game folder.
+is_grouping_folder() {
+local dir="$1"
+local has_audio has_subdir
+has_audio=$(find_audio_files "$dir" 1 | head -1)
+has_subdir=$(find "$dir" -maxdepth 1 -mindepth 1 -type d | head -1)
+[[ -z "$has_audio" && -n "$has_subdir" ]]
+}
+
+# --- EMIT GAME ---
+# Write all audio files in a game directory as CSV rows
+emit_game() {
+local tld_id="$1"
+local platform_id="$2"
+local tld_name="$3"
+local platform_name="$4"
+local game_dir="$5"
+local game_name file_id file file_name cat_id extra
+
+game_name=$(basename "$game_dir")
+mapfile -t files < <(find_audio_files "$game_dir" 1 | sort)
+[[ ${#files[@]} -eq 0 ]] && return
+
+((total_subdirs++))
+file_id=1
+for file in "${files[@]}"; do
+    file_name=$(basename "$file")
+    cat_id="${tld_id}-${sub_id}-${file_id}"
+    extra=""
+    if [[ "${file_name,,}" == *.sid ]]; then
+        sid_md5=$(get_sid_info "$file")
+        extra=",\"${sid_md5}\""
+    fi
+    echo "${tld_id},${sub_id},${platform_id},${file_id},\"${cat_id}\",\"${tld_name}\",\"${platform_name}\",\"${game_name}\",\"${file_name}\"${extra}" >> "$OUTPUT_CSV"
+    ((file_id++))
+    ((total_tracks++))
+done
+((sub_id++))
+}
+
+# --- MAIN LOOP ---
+mapfile -t tlds < <(find "$WORK_DIR" -maxdepth 1 -mindepth 1 -type d | grep -vE "$excluded" | sort)
+
+for tld in "${tlds[@]}"; do
+tld_name=$(basename "$tld")
+echo "TLD: $tld_name ($tld_id)"
+((total_tlds++))
+
+platform_id=1
+mapfile -t subdirs < <(find "$tld" -maxdepth 1 -mindepth 1 -type d | sort)
+
+for subdir in "${subdirs[@]}"; do
+    subdir_name=$(basename "$subdir")
+
+    if is_grouping_folder "$subdir"; then
+        # CASE: TLD / SubPlatform / Game / files
+        # e.g. C64Music/MUSICIANS/A/Ass_It/Ass_It_tune.sid
+        platform_name="$subdir_name"
+        echo "  Grouping: $platform_name"
+        mapfile -t games < <(find "$subdir" -maxdepth 1 -mindepth 1 -type d | sort)
+        for game in "${games[@]}"; do
+            emit_game "$tld_id" "$platform_id" "$tld_name" "$platform_name" "$game"
+        done
+        ((platform_id++))
+    else
+        # CASE: TLD / Game / files
+        # e.g. C64Music/DEMOS/3_Days/3_Days.sid
+        emit_game "$tld_id" 0 "$tld_name" "$tld_name" "$subdir"
+    fi
+done
+
+((tld_id++))
+done
+
+echo "------------------------------------------"
+echo "TLDs: $total_tlds | SubDirs: $total_subdirs | Tracks: $total_tracks"
+echo "Written: $OUTPUT_CSV"
+echo "Done."
