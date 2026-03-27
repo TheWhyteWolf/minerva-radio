@@ -1,9 +1,9 @@
 # MiNERVA Radio 
 
 A terminal-based video game music radio station with a live spectrum visualiser,
-track request system, and full catalogue management tools.
+track request system, and basic catalogue management tools.
 
-Built for Arch Linux. Plays VGM, SPC, MP3, FLAC, and WAV files from your local
+Built for Arch Linux, should be portable soon. Plays VGM, SPC, MP3, FLAC, and WAV files from your local
 music library.
 
 ## Features
