@@ -7,19 +7,23 @@ pkgdesc="Terminal VGM radio station with spectrum visualiser and request system"
 arch=('any')
 url="https://github.com/TheWhyteWolf/MiNERVA-Radio"
 license=('MIT')
+install=minerva-radio.install
 depends=(
     'bash'
     'tmux'
     'mpv'
     'python'
-    'python-openpyxl'
-    'pulseaudio'
+    'libpulse'
     'ffmpeg'
     'vgmplay'
-    'cli-visualizer'
     'unrar'
     'curl'
+    'bc'
+    'sidplayfp'
+    'vspcplay-git'
 )
+optdepends=(
+    'cli-visualizer'
 source=("$pkgname-$pkgver.tar.gz::https://github.com/TheWhyteWolf/MiNERVA-Radio/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
